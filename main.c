@@ -27,6 +27,7 @@ main(void)
   cprintf("\ncpu%d: starting Fall 2024 xv6\n\n", cpunum());
   ioapicinit();    // another interrupt controller
   consoleinit();   // console hardware
+  displayinit();   // HW3: VGA display driver
   uartinit();      // serial port
   pinit();         // process table
   binit();         // buffer cache

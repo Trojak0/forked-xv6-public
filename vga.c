@@ -381,7 +381,14 @@ void cgaSavePalette()
 void cgaRestorePalette()
 {
   // restore the saved cga palette with vgaSetPalette
-  // TODO: Your code here:
+  // undo the packing done in cgaSavePalette: r<<18 | g<<10 | b<<2
+  for (int i = 0; i < 256; i++) {
+    int value = cga256[i];
+    vgaSetPalette(i,
+        (value>>18)&0x3f,
+        (value>>10)&0x3f,
+        (value>>2)&0x3f);
+  }
 }
 
 void vgaMode13() {

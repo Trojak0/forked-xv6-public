@@ -18,6 +18,12 @@
 #include "x86.h"
 
 static void consputc(int);
+static void consputc_color(int, int);
+
+// HW3: color used for cprintf output and echoed keyboard input
+static int globalcolor = 0x07;
+// HW3 bonus: set when a console fd is switched to direct (raw) mode
+static int directmode = 0;
 
 static int panicked = 0;
 
@@ -149,7 +155,7 @@ panic(char *s)
 static ushort *crt = (ushort*)P2V(0xb8000);  // CGA memory
 
   static void
-cgaputc(int c)
+cgaputc(int c, int color)
 {
   int pos;
 
@@ -164,7 +170,7 @@ cgaputc(int c)
   else if (c == BACKSPACE) {
     if (pos > 0) --pos;
   } else
-    crt[pos++] = (c&0xff) | 0x0700;  // gray on black
+    crt[pos++] = (c&0xff) | (color << 8);  // HW3: color in the high byte
 
   if ((pos/80) >= 24){  // Scroll up.
     memmove(crt, crt+80, sizeof(crt[0])*23*80);
@@ -179,8 +185,17 @@ cgaputc(int c)
   crt[pos] = ' ' | 0x0700;
 }
 
+// old entry point: everything that doesn't care about color
+// (cprintf, panic, keyboard echo) uses the global color
   void
 consputc(int c)
+{
+  consputc_color(c, globalcolor);
+}
+
+// HW3: same as the old consputc, but with an explicit color
+  static void
+consputc_color(int c, int color)
 {
   if (panicked) {
     cli();
@@ -192,7 +207,7 @@ consputc(int c)
     uartputc('\b'); uartputc(' '); uartputc('\b');
   } else
     uartputc(c);
-  cgaputc(c);
+  cgaputc(c, color);
 }
 
 #define INPUT_BUF 128
@@ -205,6 +220,11 @@ struct {
 } input;
 
 #define C(x)  ((x)-'@')  // Control-x
+
+// HW3: layout of f->dev_payload for console files
+#define COLOR_MASK   0xff    // low byte: text attribute (color)
+#define DIRECT_FLAG  0x100   // bonus: direct mode enabled on this fd
+#define DIRECT_MODE  2       // bonus: ioctl param number
 
   void
 consoleintr(int (*getc)(void))
@@ -237,8 +257,10 @@ consoleintr(int (*getc)(void))
       if (c != 0 && input.e-input.r < INPUT_BUF) {
         c = (c == '\r') ? '\n' : c;
         input.buf[input.e++ % INPUT_BUF] = c;
-        consputc(c);
-        if (c == '\n' || c == C('D') || input.e == input.r+INPUT_BUF) {
+        if (!directmode)
+          consputc(c);
+        // HW3 bonus: in direct mode, hand every key to the reader immediately
+        if (directmode || c == '\n' || c == C('D') || input.e == input.r+INPUT_BUF) {
           input.w = input.e;
           wakeup(&input.r);
         }
@@ -259,6 +281,11 @@ consoleread(struct file *f, char *dst, int n)
   acquire(&input.lock);
   while(n > 0){
     while(input.r == input.w){
+      // HW3 bonus: direct mode never blocks; return what we have, or -1
+      if ((addr_t)f->dev_payload & DIRECT_FLAG) {
+        release(&input.lock);
+        return (target - n) > 0 ? (target - n) : -1;
+      }
       if (proc->killed) {
         release(&input.lock);
         ilock(f->ip);
@@ -288,6 +315,25 @@ consoleread(struct file *f, char *dst, int n)
 int
 consoleioctl(struct file *f, int param, int value)
 {
+  addr_t payload = (addr_t)f->dev_payload;
+
+  switch(param){
+  case 0:  // color for this file descriptor only
+    f->dev_payload = (void*)((payload & ~COLOR_MASK) | (value & COLOR_MASK));
+    return 0;
+  case 1:  // global color: cprintf output and echoed input
+    globalcolor = value & COLOR_MASK;
+    return 0;
+  case DIRECT_MODE:  // bonus: raw, non-blocking input on this fd
+    if (value) {
+      f->dev_payload = (void*)(payload | DIRECT_FLAG);
+      directmode = 1;
+    } else {
+      f->dev_payload = (void*)(payload & ~DIRECT_FLAG);
+      directmode = 0;
+    }
+    return 0;
+  }
   cprintf("Got unknown console ioctl request. %d = %d\n",param,value);
   return -1;
 }
@@ -296,10 +342,15 @@ int
 consolewrite(struct file *f, char *buf, int n)
 {
   int i;
+  // HW3: the color set by ioctl(fd,0,color) lives in this struct file.
+  // 0 means ioctl was never called on it (sys_open sets it to 0) -> gray.
+  int color = (addr_t)f->dev_payload & COLOR_MASK;
+  if (color == 0)
+    color = 0x07;
 
   acquire(&cons.lock);
   for(i = 0; i < n; i++)
-    consputc(buf[i] & 0xff);
+    consputc_color(buf[i] & 0xff, color);
   release(&cons.lock);
 
   return n;

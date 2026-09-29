@@ -27,6 +27,14 @@ void            consoleinit(void);
 void            cprintf(char*, ...);
 void            consoleintr(int(*)(void));
 int             consoleioctl(struct file *,int,int);
+
+// display.c (HW3)
+void            displayinit(void);
+
+// vga.c (HW3)
+void            vgaMode3(void);
+void            vgaMode13(void);
+void            vgaSetPalette(int, int, int, int);
 void            panic(char*) __attribute__((noreturn));
 
 // exec.c
