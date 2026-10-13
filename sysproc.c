@@ -170,6 +170,25 @@ sys_mmap(void)
   int
 handle_pagefault(addr_t va)
 {
-  // TODO: your code here
-  return 0;
+  int i;
+  struct file *f;
+  addr_t start, end;
+
+  if(proc == 0)                       // fault with no process (kernel bug) → not ours
+    return 0;
+
+  for(i = 0; i < proc->mmapcount; i++){
+    start = proc->mmaps[i].start;
+    f = proc->ofile[proc->mmaps[i].fd];   // get the file back via the saved fd
+    if(f == 0 || f->type != FD_INODE)     // fd was closed → can't fill the page
+      continue;
+    end = start + PGROUNDUP(f->ip->size);
+
+    if(va >= start && va < end){          // 1. is va inside mapping i?
+      if(mmap_page(f, start, PGROUNDDOWN(va)) < 0)  // 2. allocate + fill + map that one page
+        return 0;                         //    out of memory → let it be killed
+      return 1;                           // 3. handled: CPU retries the instruction
+    }
+  }
+  return 0;                               // not in any mapping → bad access (bad.c)
 }
