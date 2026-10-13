@@ -97,11 +97,31 @@ sys_uptime(void)
 sys_mmap(void)
 {
   int fd, flags;
+  struct file *f;
+  addr_t start;
+
   if(argint(0,&fd) < 0 || argint(1,&flags) < 0)
     return MMAP_FAILED;
 
-  // TODO: your implementation
-  return MMAP_FAILED;
+  // 1. Validate fd -- same check as argfd() line 7477
+  if(fd < 0 || fd >= NOFILE || (f = proc->ofile[fd]) == 0)
+    return MMAP_FAILED;
+  if(f->type != FD_INODE)          // pipes have no inode / no size
+    return MMAP_FAILED;
+
+  // 2. Room for another mapping? (mmaps[] has 10 slots)
+  if(proc->mmapcount >= NELEM(proc->mmaps))
+    return MMAP_FAILED;
+
+  // 3. Reserve address space -- same shape as sys_sbrk (3950-3961)
+  start = (addr_t)proc->mmaptop;                    // old top = where this mapping begins
+  proc->mmaps[proc->mmapcount].fd = fd;             // remember what's mapped where
+  proc->mmaps[proc->mmapcount].start = start;
+  proc->mmapcount++;
+  proc->mmaptop += PGROUNDUP(f->ip->size);          // next mapping starts on the next page
+
+  // Stage 3 goes here: if(flags == 0) allocate + fill the pages now
+  return start;
 }
 
   int
