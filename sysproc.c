@@ -92,6 +92,38 @@ sys_uptime(void)
   return xticks;
 }
 
+// Allocate one page, fill it from the file, and map it at va.
+// start = where this mapping begins; va = page-aligned address inside it.
+static int
+mmap_page(struct file *f, addr_t start, addr_t va)
+{
+  char *mem;
+  uint off, n;
+
+  if((mem = kalloc()) == 0)              // 1. physical page (kernel virtual addr)
+    return -1;
+  memset(mem, 0, PGSIZE);                // 2. zero it (kfree left junk; tail past EOF)
+
+  off = va - start;                      // 3. which part of the file goes in this page
+  n = f->ip->size - off;
+  if(n > PGSIZE)
+    n = PGSIZE;                          //    last page may be partial
+
+  ilock(f->ip);                          // 4. read file bytes into the page
+  if(readi(f->ip, mem, off, n) != n){    //    (same as loaduvm line 2169)
+    iunlock(f->ip);
+    kfree(mem);
+    return -1;
+  }
+  iunlock(f->ip);
+
+  if(mappages(proc->pgdir, (char*)va, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){
+    kfree(mem);                          // 5. user va -> physical page, writable, user
+    return -1;
+  }
+  return 0;
+}
+
 #define MMAP_FAILED ((~0lu))
   addr_t
 sys_mmap(void)
@@ -109,18 +141,29 @@ sys_mmap(void)
   if(f->type != FD_INODE)          // pipes have no inode / no size
     return MMAP_FAILED;
 
-  // 2. Room for another mapping? (mmaps[] has 10 slots)
+  // 2. Room for another mapping?
   if(proc->mmapcount >= NELEM(proc->mmaps))
     return MMAP_FAILED;
 
-  // 3. Reserve address space -- same shape as sys_sbrk (3950-3961)
-  start = (addr_t)proc->mmaptop;                    // old top = where this mapping begins
-  proc->mmaps[proc->mmapcount].fd = fd;             // remember what's mapped where
+  start = (addr_t)proc->mmaptop;
+
+  // 3. Eager: allocate + fill every page now
+  if(flags == 0){
+    addr_t va;
+    for(va = start; va < start + PGROUNDUP(f->ip->size); va += PGSIZE){
+      if(mmap_page(f, start, va) < 0){
+        deallocuvm(proc->pgdir, va, start);   // free pages [start, va) mapped so far
+        return MMAP_FAILED;
+      }
+    }
+  }
+
+  // 4. Bookkeeping (same as Stage 2)
+  proc->mmaps[proc->mmapcount].fd = fd;
   proc->mmaps[proc->mmapcount].start = start;
   proc->mmapcount++;
-  proc->mmaptop += PGROUNDUP(f->ip->size);          // next mapping starts on the next page
+  proc->mmaptop += PGROUNDUP(f->ip->size);
 
-  // Stage 3 goes here: if(flags == 0) allocate + fill the pages now
   return start;
 }
 
